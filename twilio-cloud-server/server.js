@@ -165,50 +165,104 @@ CORE RULES & PERSONA:
 }
 
 /**
- * Generates pristine audio/wav speech using Gemini 3.8 Flash TTS with Puck neural voice
+ * Creates standard 44-byte WAV header for raw PCM audio
  */
-function generateTtsAudio(textToSpeak) {
-  return new Promise((resolve) => {
-    if (!GEMINI_API_KEY) return resolve(null);
+function pcmToWavBuffer(pcmBuffer, sampleRate = 24000, numChannels = 1, bitsPerSample = 16) {
+  const byteRate = sampleRate * numChannels * (bitsPerSample / 8);
+  const blockAlign = numChannels * (bitsPerSample / 8);
+  const dataSize = pcmBuffer.length;
+  const header = Buffer.alloc(44);
 
-    const payload = JSON.stringify({
-      contents: [{ parts: [{ text: textToSpeak }] }],
-      generationConfig: {
-        speechConfig: {
-          voiceConfig: {
-            prebuiltVoiceConfig: {
-              voiceName: 'Puck'
+  header.write('RIFF', 0);
+  header.writeUInt32LE(36 + dataSize, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16);
+  header.writeUInt16LE(1, 20);
+  header.writeUInt16LE(numChannels, 22);
+  header.writeUInt32LE(sampleRate, 24);
+  header.writeUInt32LE(byteRate, 28);
+  header.writeUInt16LE(blockAlign, 32);
+  header.writeUInt16LE(bitsPerSample, 34);
+  header.write('data', 36);
+  header.writeUInt32LE(dataSize, 40);
+
+  return Buffer.concat([header, pcmBuffer]);
+}
+
+/**
+ * Generates pristine audio/wav speech using Gemini Neural Voice TTS
+ */
+async function generateTtsAudio(textToSpeak) {
+  if (!GEMINI_API_KEY || !textToSpeak) return null;
+
+  const ttsModels = ['gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-2.0-flash-exp'];
+
+  for (const model of ttsModels) {
+    try {
+      const payload = JSON.stringify({
+        contents: [{ parts: [{ text: textToSpeak }] }],
+        generationConfig: {
+          responseModalities: ['AUDIO'],
+          speechConfig: {
+            voiceConfig: {
+              prebuiltVoiceConfig: {
+                voiceName: 'Puck'
+              }
             }
           }
         }
-      }
-    });
-
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash-tts:generateContent?key=${GEMINI_API_KEY}`;
-    const req = https.request(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(payload)
-      }
-    }, (res) => {
-      let data = '';
-      res.on('data', chunk => data += chunk);
-      res.on('end', () => {
-        try {
-          const json = JSON.parse(data);
-          const b64 = json.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
-          resolve(b64 || null);
-        } catch {
-          resolve(null);
-        }
       });
-    });
 
-    req.on('error', () => resolve(null));
-    req.write(payload);
-    req.end();
-  });
+      const audioBase64 = await new Promise((resolve, reject) => {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_API_KEY}`;
+        const req = https.request(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(payload)
+          }
+        }, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => {
+            try {
+              const json = JSON.parse(data);
+              const part = json.candidates?.[0]?.content?.parts?.[0];
+              const inline = part?.inlineData;
+              if (inline && inline.data) {
+                const mime = inline.mimeType || '';
+                if (mime.includes('wav') || mime.includes('mp3') || mime.includes('ogg')) {
+                  return resolve(inline.data);
+                }
+                // Handle raw PCM: convert to valid WAV container
+                const rawBuffer = Buffer.from(inline.data, 'base64');
+                const wavBuffer = pcmToWavBuffer(rawBuffer, 24000, 1, 16);
+                return resolve(wavBuffer.toString('base64'));
+              }
+              resolve(null);
+            } catch {
+              resolve(null);
+            }
+          });
+        });
+
+        req.on('error', () => resolve(null));
+        req.setTimeout(8000, () => {
+          req.destroy();
+          resolve(null);
+        });
+        req.write(payload);
+        req.end();
+      });
+
+      if (audioBase64) return audioBase64;
+    } catch (err) {
+      console.warn(`[TTS Notice] Model ${model} audio note:`, err.message);
+    }
+  }
+
+  return null;
 }
 
 // Health & Status endpoint
