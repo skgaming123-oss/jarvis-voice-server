@@ -621,6 +621,8 @@
       fallbackSpeechSynthesis(text);
     }
 
+    let speechKeepAliveTimer = null;
+
     function fallbackSpeechSynthesis(text) {
       if (!('speechSynthesis' in window)) {
         isSpeaking = false;
@@ -631,37 +633,71 @@
       try {
         window.speechSynthesis.cancel();
         window.speechSynthesis.resume();
-        const utterance = new SpeechSynthesisUtterance(text);
-        utterance.rate = 1.0;
-        utterance.pitch = 0.95;
-        utterance.lang = 'hi-IN';
 
-        const voices = availableVoices.length > 0 ? availableVoices : (window.speechSynthesis.getVoices() || []);
-        const best = voices.find(v => v.lang && (v.lang.includes('hi') || v.lang.includes('IN'))) ||
-                     voices.find(v => v.name && (v.name.includes('Hindi') || v.name.includes('David') || v.name.includes('Google') || v.name.includes('Natural')));
-        if (best) utterance.voice = best;
+        // Split long text into natural sentences to avoid browser 15-second speech truncation
+        const sentences = text
+          .split(/([।\.\?!:\n]+)/)
+          .reduce((acc, cur, idx, arr) => {
+            if (idx % 2 === 0) {
+              const full = (cur + (arr[idx + 1] || '')).trim();
+              if (full.length > 0) acc.push(full);
+            }
+            return acc;
+          }, []);
 
-        utterance.onend = () => {
-          isSpeaking = false;
-          coreSphere.classList.remove('pulse-active');
-          if (isCallActive) {
-            statusText.textContent = "Jarvis Listening... (Speak now)";
-            badgeLabel.textContent = "LISTENING";
-            badgeLabel.style.color = "#10b981";
-            badgeDot.style.background = "#10b981";
-            startListening();
+        const queue = sentences.length > 0 ? sentences : [text];
+        let currentIndex = 0;
+
+        clearInterval(speechKeepAliveTimer);
+        speechKeepAliveTimer = setInterval(() => {
+          if (isSpeaking && window.speechSynthesis.speaking) {
+            window.speechSynthesis.resume();
+          } else {
+            clearInterval(speechKeepAliveTimer);
           }
-        };
+        }, 3000);
 
-        utterance.onerror = (err) => {
-          console.warn("Speech synthesis notice:", err);
-          isSpeaking = false;
-          coreSphere.classList.remove('pulse-active');
-          if (isCallActive) startListening();
-        };
+        function speakNext() {
+          if (!isSpeaking || currentIndex >= queue.length) {
+            clearInterval(speechKeepAliveTimer);
+            isSpeaking = false;
+            coreSphere.classList.remove('pulse-active');
+            if (isCallActive) {
+              statusText.textContent = "Jarvis Listening... (Speak now)";
+              badgeLabel.textContent = "LISTENING";
+              badgeLabel.style.color = "#10b981";
+              badgeDot.style.background = "#10b981";
+              startListening();
+            }
+            return;
+          }
 
-        window.speechSynthesis.speak(utterance);
+          const currentSentence = queue[currentIndex++];
+          const utterance = new SpeechSynthesisUtterance(currentSentence);
+          utterance.rate = 1.05;
+          utterance.pitch = 0.95;
+          utterance.lang = 'hi-IN';
+
+          const voices = availableVoices.length > 0 ? availableVoices : (window.speechSynthesis.getVoices() || []);
+          const best = voices.find(v => v.lang && (v.lang.includes('hi') || v.lang.includes('IN'))) ||
+                       voices.find(v => v.name && (v.name.includes('Hindi') || v.name.includes('David') || v.name.includes('Google') || v.name.includes('Natural')));
+          if (best) utterance.voice = best;
+
+          utterance.onend = () => {
+            speakNext();
+          };
+
+          utterance.onerror = (err) => {
+            console.warn("Speech chunk note:", err);
+            speakNext();
+          };
+
+          window.speechSynthesis.speak(utterance);
+        }
+
+        speakNext();
       } catch (e) {
+        clearInterval(speechKeepAliveTimer);
         isSpeaking = false;
         if (isCallActive) startListening();
       }
