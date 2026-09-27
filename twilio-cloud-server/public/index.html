@@ -542,8 +542,25 @@
       transcriptBox.scrollTop = transcriptBox.scrollHeight;
     }
 
+    let availableVoices = [];
+    if ('speechSynthesis' in window) {
+      function loadVoices() {
+        availableVoices = window.speechSynthesis.getVoices() || [];
+      }
+      loadVoices();
+      if (window.speechSynthesis.onvoiceschanged !== undefined) {
+        window.speechSynthesis.onvoiceschanged = loadVoices;
+      }
+    }
+
     function unlockMobileAudio() {
       try {
+        if ('speechSynthesis' in window) {
+          window.speechSynthesis.resume();
+          const dummy = new SpeechSynthesisUtterance('');
+          dummy.volume = 0;
+          window.speechSynthesis.speak(dummy);
+        }
         persistentAudio.src = "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
         persistentAudio.play().then(() => {
           persistentAudio.pause();
@@ -587,10 +604,13 @@
           persistentAudio.onerror = () => {
             fallbackSpeechSynthesis(text);
           };
-          persistentAudio.play().catch((err) => {
-            console.warn("Neural audio play notice, falling back:", err);
-            fallbackSpeechSynthesis(text);
-          });
+          const playPromise = persistentAudio.play();
+          if (playPromise !== undefined) {
+            playPromise.catch((err) => {
+              console.warn("Neural audio autoplay note, falling back to speech synthesis:", err);
+              fallbackSpeechSynthesis(text);
+            });
+          }
           return;
         } catch (e) {
           fallbackSpeechSynthesis(text);
@@ -608,34 +628,43 @@
         return;
       }
 
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 1.0;
-      utterance.pitch = 0.95;
-      utterance.lang = 'hi-IN';
+      try {
+        window.speechSynthesis.cancel();
+        window.speechSynthesis.resume();
+        const utterance = new SpeechSynthesisUtterance(text);
+        utterance.rate = 1.0;
+        utterance.pitch = 0.95;
+        utterance.lang = 'hi-IN';
 
-      const voices = window.speechSynthesis.getVoices();
-      const best = voices.find(v => v.lang.includes('hi') || v.name.includes('Hindi') || v.name.includes('David') || v.name.includes('Google'));
-      if (best) utterance.voice = best;
+        const voices = availableVoices.length > 0 ? availableVoices : (window.speechSynthesis.getVoices() || []);
+        const best = voices.find(v => v.lang && (v.lang.includes('hi') || v.lang.includes('IN'))) ||
+                     voices.find(v => v.name && (v.name.includes('Hindi') || v.name.includes('David') || v.name.includes('Google') || v.name.includes('Natural')));
+        if (best) utterance.voice = best;
 
-      utterance.onend = () => {
+        utterance.onend = () => {
+          isSpeaking = false;
+          coreSphere.classList.remove('pulse-active');
+          if (isCallActive) {
+            statusText.textContent = "Jarvis Listening... (Speak now)";
+            badgeLabel.textContent = "LISTENING";
+            badgeLabel.style.color = "#10b981";
+            badgeDot.style.background = "#10b981";
+            startListening();
+          }
+        };
+
+        utterance.onerror = (err) => {
+          console.warn("Speech synthesis notice:", err);
+          isSpeaking = false;
+          coreSphere.classList.remove('pulse-active');
+          if (isCallActive) startListening();
+        };
+
+        window.speechSynthesis.speak(utterance);
+      } catch (e) {
         isSpeaking = false;
-        coreSphere.classList.remove('pulse-active');
-        if (isCallActive) {
-          statusText.textContent = "Jarvis Listening... (Speak now)";
-          badgeLabel.textContent = "LISTENING";
-          badgeLabel.style.color = "#10b981";
-          badgeDot.style.background = "#10b981";
-          startListening();
-        }
-      };
-
-      utterance.onerror = () => {
-        isSpeaking = false;
-        coreSphere.classList.remove('pulse-active');
         if (isCallActive) startListening();
-      };
-
-      window.speechSynthesis.speak(utterance);
+      }
     }
 
     // Web Speech Recognition
