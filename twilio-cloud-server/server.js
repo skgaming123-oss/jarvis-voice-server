@@ -75,10 +75,10 @@ CURRENT REAL-WORLD TIME & DATE (IST): ${currentDateContext}.
 
 CORE RULES & PERSONA:
 1. IDENTITY: Your name is J.A.R.V.I.S. (जार्विस). You are deeply loyal, respectful, and devoted to the user, addressing them politely as "सर" (Sir) or "बॉस" (Boss).
-2. NO REPETITIVE SELF-INTRODUCTIONS: NEVER say "Main Jarvis hoon", "I am Jarvis", or introduce yourself at the beginning of random queries unless the user specifically asks "tumhara naam kya hai" or "who are you".
-3. TONE & LANGUAGE: Respond in natural, respectful, conversational Hindi (Devanagari script) or natural Hinglish. Keep speech clear, crisp, authoritative, and helpful.
-4. COMPLETENESS: Never cut sentences halfway. Provide complete, coherent answers.
-5. ACCURACY: Answer facts, dates, calculations, weather inquiries, and automation requests accurately.`;
+2. FULL & DETAILED RESPONSES: Provide complete, comprehensive, and intelligent answers just like the main Jarvis Android app. Do NOT give artificially shortened one-liners unless specifically asked for brevity. Explain things clearly with necessary details, examples, steps, or calculations.
+3. NATURAL TONE & SCRIPT: Respond in natural, polite, conversational Hindi (Devanagari script) or natural Hinglish according to the user's prompt.
+4. NO REDUNDANT INTRODUCTIONS: Do not introduce yourself ("Main Jarvis hoon") at the start of every answer unless specifically asked about your identity.
+5. EXCELLENT ACCURACY: Answer facts, current dates, explanations, coding, logic, and general queries with 100% precision.`;
 
   // Get recent turns for this device
   let history = deviceConversations.get(deviceId) || [];
@@ -102,8 +102,8 @@ CORE RULES & PERSONA:
     contents: contents,
     systemInstruction: { parts: [{ text: sysInstruction }] },
     generationConfig: {
-      temperature: 0.3,
-      maxOutputTokens: 350
+      temperature: 0.6,
+      maxOutputTokens: 2048
     }
   });
 
@@ -348,19 +348,30 @@ app.get('/api/call-history', (req, res) => {
   let records = [];
 
   if (deviceId && deviceCallHistory.has(deviceId)) {
-    records = deviceCallHistory.get(deviceId);
-  } else if (!deviceId) {
-    // If no deviceId specified, return recent items across all devices
+    records.push(...deviceCallHistory.get(deviceId));
+  }
+  
+  if (deviceCallHistory.has('default')) {
+    records.push(...deviceCallHistory.get('default'));
+  }
+
+  // If no device-specific records, return recent activity across all sessions so the app receives everything!
+  if (records.length === 0) {
     for (const list of deviceCallHistory.values()) {
       records.push(...list);
     }
-    records.sort((a, b) => a.timestamp - b.timestamp);
-    records = records.slice(-50);
   }
+
+  // Deduplicate by item ID and sort chronologically
+  const uniqueMap = new Map();
+  for (const r of records) {
+    uniqueMap.set(r.id, r);
+  }
+  const result = Array.from(uniqueMap.values()).sort((a, b) => a.timestamp - b.timestamp);
 
   res.json({
     deviceId: deviceId || 'all',
-    history: records
+    history: result.slice(-100)
   });
 });
 
