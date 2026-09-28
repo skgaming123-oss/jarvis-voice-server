@@ -61,7 +61,46 @@ function getCurrentIstContext() {
 }
 
 /**
- * Direct Gemini AI Completion with multi-turn context and full Jarvis persona
+ * Cleans text from markdown, symbols, and formatting tags for pristine speech output
+ */
+function cleanSpeechText(rawText) {
+  if (!rawText) return '';
+  let text = rawText;
+
+  // Remove code blocks and inline code
+  text = text.replace(/```[\s\S]*?```/g, ' ');
+  text = text.replace(/`([^`]+)`/g, '$1');
+
+  // Remove markdown headers, bold, italics, strikethrough
+  text = text.replace(/^#+\s+/gm, '');
+  text = text.replace(/[*_~]{1,3}([^*_~]+)[*_~]{1,3}/g, '$1');
+  text = text.replace(/[*_~#]/g, '');
+
+  // Remove markdown links & images [text](url) -> text
+  text = text.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1');
+  text = text.replace(/\[([^\]]+)\]\([^)]*\)/g, '$1');
+
+  // Remove HTML / XML tags <tag> -> ''
+  text = text.replace(/<\/?[^>]+(>|$)/g, '');
+
+  // Remove unwanted slashes, bullets, math symbols that TTS mispronounces
+  text = text.replace(/[\\\/\|\<\>\+\=\^\$]/g, ' ');
+  text = text.replace(/^[•\-\*\+]\s+/gm, '');
+
+  // Remove redundant self-introduction if present
+  text = text.replace(/^(?:नमस्ते\s+सर[,!]?\s*)?(?:मैं\s+जार्विस\s+हूँ|मेरा\s+नाम\s+जार्विस\s+है|main\s+jarvis\s+hoon|hello\s+main\s+jarvis\s+hoon)[,.\s:]*/i, '').trim();
+
+  // Normalize spaces and ensure natural prefix
+  text = text.replace(/\s{2,}/g, ' ').trim();
+  if (!text.startsWith('सर') && !text.startsWith('जी सर') && !text.startsWith('बिल्कुल') && !text.startsWith('नमस्ते')) {
+    text = 'सर, ' + text;
+  }
+
+  return text;
+}
+
+/**
+ * Direct Gemini AI Completion with multi-turn context and conversational voice persona
  */
 async function queryGeminiChat(userQuery, deviceId = 'default') {
   if (!GEMINI_API_KEY || GEMINI_API_KEY === 'YOUR_GEMINI_AI_STUDIO_API_KEY') {
@@ -70,15 +109,15 @@ async function queryGeminiChat(userQuery, deviceId = 'default') {
 
   const currentDateContext = getCurrentIstContext();
   const sysInstruction = 
-    `You are J.A.R.V.I.S. (Just A Rather Very Intelligent System), the ultimate AI assistant, companion, and loyal advisor created by the user.
+    `You are J.A.R.V.I.S. (Just A Rather Very Intelligent System), the ultimate personal AI assistant and loyal companion created by the user.
 CURRENT REAL-WORLD TIME & DATE (IST): ${currentDateContext}.
 
-CORE RULES & PERSONA:
-1. IDENTITY: Your name is J.A.R.V.I.S. (जार्विस). You are deeply loyal, respectful, and devoted to the user, addressing them politely as "सर" (Sir) or "बॉस" (Boss).
-2. FULL & DETAILED RESPONSES: Provide complete, comprehensive, and intelligent answers just like the main Jarvis Android app. Do NOT give artificially shortened one-liners unless specifically asked for brevity. Explain things clearly with necessary details, examples, steps, or calculations.
-3. NATURAL TONE & SCRIPT: Respond in natural, polite, conversational Hindi (Devanagari script) or natural Hinglish according to the user's prompt.
-4. NO REDUNDANT INTRODUCTIONS: Do not introduce yourself ("Main Jarvis hoon") at the start of every answer unless specifically asked about your identity.
-5. EXCELLENT ACCURACY: Answer facts, current dates, explanations, coding, logic, and general queries with 100% precision.`;
+VOICE CALL RULES & PERSONA:
+1. IDENTITY: You are J.A.R.V.I.S. (जार्विस). Speak with a polite, sophisticated, loyal, and authoritative male tone, addressing the user respectfully as "सर" (Sir) or "बॉस" (Boss).
+2. CONVERSATIONAL SPOKEN LENGTH: You are speaking in a real-time live voice call. Do NOT generate huge essays, long bullet lists, or repetitive walls of text. Keep your responses natural, crisp, intelligent, and conversational (typically 2 to 4 spoken sentences) unless the user specifically asks for an extensive in-depth breakdown.
+3. ABSOLUTELY NO MARKDOWN OR SYMBOLS: Do NOT use asterisks (*), hashtags (#), brackets, HTML tags (<>), bullets, slashes (/), backticks, or emojis. Output 100% clean spoken sentences that sound natural when read aloud by Text-to-Speech.
+4. LANGUAGE: Natural conversational Hindi (Devanagari script) or natural Hinglish. Keep pronunciation effortless for TTS engines.
+5. NO REPETITIVE INTRODUCTIONS: Never start by saying "Main Jarvis hoon" unless directly asked about your identity.`;
 
   // Get recent turns for this device
   let history = deviceConversations.get(deviceId) || [];
@@ -102,8 +141,8 @@ CORE RULES & PERSONA:
     contents: contents,
     systemInstruction: { parts: [{ text: sysInstruction }] },
     generationConfig: {
-      temperature: 0.6,
-      maxOutputTokens: 2048
+      temperature: 0.5,
+      maxOutputTokens: 600
     }
   });
 
@@ -139,29 +178,21 @@ CORE RULES & PERSONA:
         req.end();
       });
 
-      let text = resText.trim();
-      // Remove any unwanted markdown headers/bullets for speech smoothness
-      text = text.replace(/^#+\s+/gm, '').replace(/^\*\s+/gm, '').trim();
-
-      // Clean redundant greeting prefix if generated accidentally
-      text = text.replace(/^(?:नमस्ते\s+सर[,!]?\s*)?(?:मैं\s+जार्विस\s+हूँ|मेरा\s+नाम\s+जार्विस\s+है|main\s+jarvis\s+hoon|hello\s+main\s+jarvis\s+hoon)[,.\s:]*/i, '').trim();
-      if (!text.startsWith('सर') && !text.startsWith('जी सर') && !text.startsWith('बिल्कुल') && !text.startsWith('नमस्ते')) {
-        text = 'सर, ' + text;
-      }
+      const cleaned = cleanSpeechText(resText);
 
       // Update multi-turn history
       history.push({ role: 'user', text: userQuery });
-      history.push({ role: 'model', text: text });
+      history.push({ role: 'model', text: cleaned });
       if (history.length > 12) history = history.slice(-12);
       deviceConversations.set(deviceId, history);
 
-      return text;
+      return cleaned;
     } catch (err) {
       console.warn(`[Model Fallback] ${model} failed: ${err.message}, trying next...`);
     }
   }
 
-  return 'जी सर, मैंने आपका निर्देश सुन लिया है। बताइए मैं आपकी क्या सेवा करूँ?';
+  return 'जी सर, मैंने आपका निर्देश सुन लिया है। बताइए मैं आपकी क्या सहायता करूँ?';
 }
 
 /**
