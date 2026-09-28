@@ -542,15 +542,56 @@
       transcriptBox.scrollTop = transcriptBox.scrollHeight;
     }
 
+    function cleanUiSpeechText(raw) {
+      if (!raw) return '';
+      return raw
+        .replace(/```[\s\S]*?```/g, '')
+        .replace(/`([^`]+)`/g, '$1')
+        .replace(/[*_~#]/g, '')
+        .replace(/<\/?[^>]+(>|$)/g, '')
+        .replace(/[\\\/\|\<\>\+\=\^\$]/g, ' ')
+        .replace(/^[•\-\*\+]\s+/gm, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+    }
+
     let availableVoices = [];
-    if ('speechSynthesis' in window) {
-      function loadVoices() {
+    function loadVoices() {
+      if ('speechSynthesis' in window) {
         availableVoices = window.speechSynthesis.getVoices() || [];
       }
-      loadVoices();
-      if (window.speechSynthesis.onvoiceschanged !== undefined) {
-        window.speechSynthesis.onvoiceschanged = loadVoices;
-      }
+    }
+    loadVoices();
+    if ('speechSynthesis' in window && window.speechSynthesis.onvoiceschanged !== undefined) {
+      window.speechSynthesis.onvoiceschanged = loadVoices;
+    }
+
+    function getBestMaleJarvisVoice() {
+      const voices = availableVoices.length > 0 ? availableVoices : (window.speechSynthesis ? window.speechSynthesis.getVoices() : []);
+      if (!voices || !voices.length) return null;
+
+      const femaleKeywords = ['female', 'zira', 'heera', 'swara', 'kalpana', 'samantha', 'victoria', 'karen', 'veena', 'ananya', 'woman', 'girl', 'catherine'];
+      const maleVoices = voices.filter(v => {
+        const name = (v.name || '').toLowerCase();
+        return !femaleKeywords.some(k => name.includes(k));
+      });
+
+      const candidates = maleVoices.length > 0 ? maleVoices : voices;
+
+      // 1. Male Hindi
+      const hiMale = candidates.find(v => (v.lang && (v.lang.includes('hi') || v.lang.includes('HI'))) && !femaleKeywords.some(k => (v.name || '').toLowerCase().includes(k)));
+      if (hiMale) return hiMale;
+
+      // 2. Male Indian English / British English (Jarvis tone)
+      const ukOrInMale = candidates.find(v => {
+        const n = (v.name || '').toLowerCase();
+        const l = (v.lang || '').toLowerCase();
+        return (l.includes('in') || l.includes('gb') || l.includes('uk') || l.includes('en')) &&
+               (n.includes('david') || n.includes('george') || n.includes('mark') || n.includes('guy') || n.includes('male') || n.includes('google'));
+      });
+      if (ukOrInMale) return ukOrInMale;
+
+      return candidates[0] || voices[0];
     }
 
     function unlockMobileAudio() {
@@ -578,8 +619,10 @@
     }
 
     // Play Neural Audio (WAV base64) with SpeechSynthesis Fallback
-    function playJarvisSpeech(text, audioBase64) {
+    function playJarvisSpeech(rawText, audioBase64) {
       stopAllAudio();
+      stopListening();
+      const text = cleanUiSpeechText(rawText);
       isSpeaking = true;
       statusText.textContent = "Jarvis Speaking...";
       badgeLabel.textContent = "SPEAKING";
@@ -594,10 +637,6 @@
             isSpeaking = false;
             coreSphere.classList.remove('pulse-active');
             if (isCallActive) {
-              statusText.textContent = "Jarvis Listening... (Speak now)";
-              badgeLabel.textContent = "LISTENING";
-              badgeLabel.style.color = "#10b981";
-              badgeDot.style.background = "#10b981";
               startListening();
             }
           };
@@ -607,7 +646,7 @@
           const playPromise = persistentAudio.play();
           if (playPromise !== undefined) {
             playPromise.catch((err) => {
-              console.warn("Neural audio autoplay note, falling back to speech synthesis:", err);
+              console.warn("Audio autoplay note, falling back to speech synthesis:", err);
               fallbackSpeechSynthesis(text);
             });
           }
@@ -623,18 +662,20 @@
 
     let speechKeepAliveTimer = null;
 
-    function fallbackSpeechSynthesis(text) {
+    function fallbackSpeechSynthesis(rawText) {
       if (!('speechSynthesis' in window)) {
         isSpeaking = false;
         if (isCallActive) startListening();
         return;
       }
 
+      const text = cleanUiSpeechText(rawText);
+
       try {
         window.speechSynthesis.cancel();
         window.speechSynthesis.resume();
 
-        // Split long text into natural sentences to avoid browser 15-second speech truncation
+        // Split text into natural spoken sentences
         const sentences = text
           .split(/([।\.\?!:\n]+)/)
           .reduce((acc, cur, idx, arr) => {
@@ -655,7 +696,7 @@
           } else {
             clearInterval(speechKeepAliveTimer);
           }
-        }, 3000);
+        }, 2000);
 
         function speakNext() {
           if (!isSpeaking || currentIndex >= queue.length) {
@@ -663,10 +704,6 @@
             isSpeaking = false;
             coreSphere.classList.remove('pulse-active');
             if (isCallActive) {
-              statusText.textContent = "Jarvis Listening... (Speak now)";
-              badgeLabel.textContent = "LISTENING";
-              badgeLabel.style.color = "#10b981";
-              badgeDot.style.background = "#10b981";
               startListening();
             }
             return;
@@ -674,21 +711,22 @@
 
           const currentSentence = queue[currentIndex++];
           const utterance = new SpeechSynthesisUtterance(currentSentence);
-          utterance.rate = 1.05;
-          utterance.pitch = 0.95;
+          utterance.rate = 1.0;
+          utterance.pitch = 0.88; // Deep baritone male AI tone
           utterance.lang = 'hi-IN';
 
-          const voices = availableVoices.length > 0 ? availableVoices : (window.speechSynthesis.getVoices() || []);
-          const best = voices.find(v => v.lang && (v.lang.includes('hi') || v.lang.includes('IN'))) ||
-                       voices.find(v => v.name && (v.name.includes('Hindi') || v.name.includes('David') || v.name.includes('Google') || v.name.includes('Natural')));
-          if (best) utterance.voice = best;
+          const bestVoice = getBestMaleJarvisVoice();
+          if (bestVoice) {
+            utterance.voice = bestVoice;
+            if (bestVoice.lang) utterance.lang = bestVoice.lang;
+          }
 
           utterance.onend = () => {
             speakNext();
           };
 
           utterance.onerror = (err) => {
-            console.warn("Speech chunk note:", err);
+            console.warn("Speech synthesis chunk note:", err);
             speakNext();
           };
 
@@ -703,15 +741,19 @@
       }
     }
 
-    // Web Speech Recognition
+    // Continuous Web Speech Recognition with Smart Silence Detection (VAD)
+    let silenceTimeout = null;
+    let accumulatedSpeech = '';
+
     function setupSpeechRecognition() {
       const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
       if (!SpeechRecognition) return null;
 
       const rec = new SpeechRecognition();
-      rec.continuous = false;
+      rec.continuous = true;
       rec.interimResults = true;
       rec.lang = 'hi-IN';
+      rec.maxAlternatives = 1;
 
       rec.onstart = () => {
         if (isCallActive && !isSpeaking) {
@@ -723,33 +765,52 @@
       };
 
       rec.onresult = (event) => {
+        if (!isCallActive || isSpeaking) return;
+
         let interim = '';
-        let final = '';
         for (let i = event.resultIndex; i < event.results.length; i++) {
           const t = event.results[i][0].transcript;
-          if (event.results[i].isFinal) final += t;
-          else interim += t;
+          if (event.results[i].isFinal) {
+            accumulatedSpeech += ' ' + t;
+          } else {
+            interim += t;
+          }
         }
 
-        if (interim) {
-          statusText.textContent = `सुन रहा हूँ: "${interim}"...`;
-        }
+        const currentSpeech = (accumulatedSpeech + ' ' + interim).trim();
+        if (currentSpeech) {
+          statusText.textContent = `🎙️ सुन रहा हूँ: "${currentSpeech}"`;
+          badgeLabel.textContent = "HEARING";
+          badgeLabel.style.color = "#00e5ff";
+          badgeDot.style.background = "#00e5ff";
 
-        if (final) {
-          addTranscript('You', final);
-          sendQueryToJarvis(final);
+          // Reset silence timer: user is speaking
+          clearTimeout(silenceTimeout);
+          silenceTimeout = setTimeout(() => {
+            if (isCallActive && !isSpeaking && currentSpeech.length > 1) {
+              const queryToSend = currentSpeech;
+              accumulatedSpeech = '';
+              addTranscript('You', queryToSend);
+              sendQueryToJarvis(queryToSend);
+            }
+          }, 1200);
         }
       };
 
       rec.onerror = (e) => {
-        if (isCallActive && !isSpeaking) {
-          setTimeout(startListening, 600);
+        console.warn("Speech recognition notice:", e.error);
+        if (isCallActive && !isSpeaking && e.error !== 'not-allowed') {
+          setTimeout(() => {
+            if (isCallActive && !isSpeaking) startListening();
+          }, 400);
         }
       };
 
       rec.onend = () => {
         if (isCallActive && !isSpeaking) {
-          setTimeout(startListening, 400);
+          setTimeout(() => {
+            if (isCallActive && !isSpeaking) startListening();
+          }, 200);
         }
       };
 
@@ -758,13 +819,26 @@
 
     function startListening() {
       if (!isCallActive || isSpeaking) return;
+      accumulatedSpeech = '';
+      clearTimeout(silenceTimeout);
+
+      statusText.textContent = "Jarvis Listening... (Speak now)";
+      badgeLabel.textContent = "LISTENING";
+      badgeLabel.style.color = "#10b981";
+      badgeDot.style.background = "#10b981";
+
       try {
         if (!recognition) recognition = setupSpeechRecognition();
-        if (recognition) recognition.start();
-      } catch (e) {}
+        if (recognition) {
+          recognition.start();
+        }
+      } catch (e) {
+        // Recognition might already be running
+      }
     }
 
     function stopListening() {
+      clearTimeout(silenceTimeout);
       if (recognition) {
         try { recognition.stop(); } catch (e) {}
       }
