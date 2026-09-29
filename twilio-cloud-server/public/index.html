@@ -534,10 +534,22 @@
       return `${m < 10 ? '0' : ''}${m}:${s < 10 ? '0' : ''}${s}`;
     }
 
-    function addTranscript(sender, text) {
+    function addTranscript(sender, text, imageUrl) {
       const line = document.createElement('div');
       line.className = `transcript-line ${sender.toLowerCase()}`;
-      line.innerHTML = `<span class="transcript-sender">${sender.toUpperCase()}:</span> <span>${text}</span>`;
+      
+      let html = `<span class="transcript-sender">${sender.toUpperCase()}:</span> <span>${text}</span>`;
+      if (imageUrl) {
+        html += `
+          <div style="margin-top:8px; border-radius:10px; overflow:hidden; border:1px solid rgba(0,229,255,0.4); background:rgba(0,10,25,0.8); padding:6px;">
+            <img src="${imageUrl}" style="width:100%; max-height:220px; object-fit:cover; border-radius:8px; display:block;" alt="Jarvis Photo" />
+            <div style="font-size:11px; color:#00e5ff; margin-top:5px; display:flex; align-items:center; gap:4px; font-weight:bold;">
+              <span>📸 Sent to Jarvis Android App</span>
+            </div>
+          </div>
+        `;
+      }
+      line.innerHTML = html;
       transcriptBox.appendChild(line);
       transcriptBox.scrollTop = transcriptBox.scrollHeight;
     }
@@ -570,28 +582,57 @@
       const voices = availableVoices.length > 0 ? availableVoices : (window.speechSynthesis ? window.speechSynthesis.getVoices() : []);
       if (!voices || !voices.length) return null;
 
-      const femaleKeywords = ['female', 'zira', 'heera', 'swara', 'kalpana', 'samantha', 'victoria', 'karen', 'veena', 'ananya', 'woman', 'girl', 'catherine'];
-      const maleVoices = voices.filter(v => {
-        const name = (v.name || '').toLowerCase();
-        return !femaleKeywords.some(k => name.includes(k));
+      // Female signatures to strictly reject (matches Android app JarvisVoiceEngine)
+      const femaleSignatures = [
+        'female', 'woman', 'fem', 'girl', 'lady', 'zira', '#female', '-female',
+        'x-cfn', 'x-fem', 'x-hic', 'x-hia', 'x-hib', 'x-cfo', 'x-f', 'x-ena', 'x-enb',
+        'x-cfa', 'heera', 'swara', 'kalpana', 'samantha', 'victoria', 'karen', 'veena',
+        'ananya', 'catherine', 'lekha', 'sangeeta', 'shreya', 'priya', 'neerja', 'tessa',
+        'fiona', 'moira', 'alice'
+      ];
+
+      // Explicit Male signatures from Google TTS & OS (hid, hie, gbd, rjs, david, mark, guy)
+      const explicitMaleSignatures = [
+        'hie', 'hid', 'hi-in-x-hid', 'hi-in-x-hie', 'hid#male', 'hie#male',
+        'ene#male', 'end#male', 'enc#male', 'gbd', 'gbb', 'rjs', 'david', 'mark',
+        'george', 'guy', 'male', 'man', 'boy', 'google हिन्दी', 'puck', 'ravi'
+      ];
+
+      function isStrictlyFemale(v) {
+        const n = (v.name || '').toLowerCase();
+        const uri = (v.voiceURI || '').toLowerCase();
+        return femaleSignatures.some(s => n.includes(s) || uri.includes(s));
+      }
+
+      function isExplicitMale(v) {
+        const n = (v.name || '').toLowerCase();
+        const uri = (v.voiceURI || '').toLowerCase();
+        if (isStrictlyFemale(v)) return false;
+        return explicitMaleSignatures.some(s => n.includes(s) || uri.includes(s));
+      }
+
+      // 1. Google Hindi Male D or E (Exact identical male voice as the Android App)
+      const hiMale = voices.find(v => {
+        const n = (v.name || '').toLowerCase();
+        const lang = (v.lang || '').toLowerCase();
+        return (lang.includes('hi') || lang.includes('in')) && (n.includes('hie') || n.includes('hid') || isExplicitMale(v));
       });
-
-      const candidates = maleVoices.length > 0 ? maleVoices : voices;
-
-      // 1. Male Hindi
-      const hiMale = candidates.find(v => (v.lang && (v.lang.includes('hi') || v.lang.includes('HI'))) && !femaleKeywords.some(k => (v.name || '').toLowerCase().includes(k)));
       if (hiMale) return hiMale;
 
-      // 2. Male Indian English / British English (Jarvis tone)
-      const ukOrInMale = candidates.find(v => {
-        const n = (v.name || '').toLowerCase();
+      // 2. Safe Hindi Male (not female)
+      const safeHi = voices.find(v => (v.lang || '').toLowerCase().includes('hi') && !isStrictlyFemale(v));
+      if (safeHi) return safeHi;
+
+      // 3. British / Indian English Male (Classic Jarvis Tone)
+      const ukOrInMale = voices.find(v => {
         const l = (v.lang || '').toLowerCase();
-        return (l.includes('in') || l.includes('gb') || l.includes('uk') || l.includes('en')) &&
-               (n.includes('david') || n.includes('george') || n.includes('mark') || n.includes('guy') || n.includes('male') || n.includes('google'));
+        return (l.includes('in') || l.includes('gb') || l.includes('uk') || l.includes('en')) && isExplicitMale(v);
       });
       if (ukOrInMale) return ukOrInMale;
 
-      return candidates[0] || voices[0];
+      // 4. Any voice that is strictly NOT female
+      const safeVoice = voices.find(v => !isStrictlyFemale(v));
+      return safeVoice || voices[0];
     }
 
     function unlockMobileAudio() {
@@ -712,13 +753,14 @@
           const currentSentence = queue[currentIndex++];
           const utterance = new SpeechSynthesisUtterance(currentSentence);
           utterance.rate = 1.0;
-          utterance.pitch = 0.88; // Deep baritone male AI tone
-          utterance.lang = 'hi-IN';
+          utterance.pitch = 0.70; // Guaranteed deep masculine Jarvis baritone frequency
 
           const bestVoice = getBestMaleJarvisVoice();
           if (bestVoice) {
             utterance.voice = bestVoice;
-            if (bestVoice.lang) utterance.lang = bestVoice.lang;
+            utterance.lang = bestVoice.lang || 'hi-IN';
+          } else {
+            utterance.lang = 'en-GB'; // Prevents browser from selecting default female Hindi voices (Swara/Heera)
           }
 
           utterance.onend = () => {
@@ -859,7 +901,7 @@
         });
         const data = await res.json();
         const answer = data.answer || "जी सर, मैंने सुन लिया है।";
-        addTranscript('Jarvis', answer);
+        addTranscript('Jarvis', answer, data.imageUrl);
         playJarvisSpeech(answer, data.audioBase64);
       } catch (err) {
         console.error('Call API error:', err);

@@ -121,22 +121,26 @@ function createJarvisPhotoPayload(userQuery) {
     .trim();
 
   if (!prompt || prompt.length < 2) {
-    prompt = 'Futuristic Iron Man Arc Reactor with holographic cyber glow';
+    prompt = 'Iron Man holographic arc reactor';
   }
 
-  const encodedPrompt = encodeURIComponent(prompt + ', 8k resolution, photorealistic masterpiece, dramatic lighting');
+  const encodedPrompt = encodeURIComponent(prompt.trim() + ' cinematic 8k wallpaper high quality');
   const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true`;
 
-  return {
-    imageUrl,
-    imagesJson: JSON.stringify([{
+  const imageList = [
+    {
       url: imageUrl,
-      title: prompt,
+      title: prompt.toUpperCase(),
       sourceName: "Jarvis AI Cloud Generation",
       sourceUrl: imageUrl,
       width: 1024,
       height: 1024
-    }])
+    }
+  ];
+
+  return {
+    imageUrl,
+    imagesJson: JSON.stringify(imageList)
   };
 }
 
@@ -188,8 +192,8 @@ ${photoContext}
     contents: contents,
     systemInstruction: { parts: [{ text: sysInstruction }] },
     generationConfig: {
-      temperature: 0.5,
-      maxOutputTokens: 500
+      temperature: 0.4,
+      maxOutputTokens: isPhotoRequest ? 120 : 450
     }
   });
 
@@ -430,27 +434,33 @@ app.post('/api/chat-call', async (req, res) => {
  */
 app.get('/api/call-history', (req, res) => {
   const deviceId = req.query.deviceId || '';
-  let records = [];
+  const allRecords = [];
 
+  // 1. If device-specific history exists, include it
   if (deviceId && deviceCallHistory.has(deviceId)) {
-    records.push(...deviceCallHistory.get(deviceId));
+    allRecords.push(...deviceCallHistory.get(deviceId));
   }
   
-  if (deviceCallHistory.has('default')) {
-    records.push(...deviceCallHistory.get('default'));
+  // 2. Always include web session records
+  for (const [key, list] of deviceCallHistory.entries()) {
+    if (key === 'default' || key.startsWith('jarvis_web') || (deviceId && key.includes(deviceId))) {
+      allRecords.push(...list);
+    }
   }
 
-  // If no device-specific records, return recent activity across all sessions so the app receives everything!
-  if (records.length === 0) {
+  // 3. If still empty, return recent items across all devices
+  if (allRecords.length === 0) {
     for (const list of deviceCallHistory.values()) {
-      records.push(...list);
+      allRecords.push(...list);
     }
   }
 
   // Deduplicate by item ID and sort chronologically
   const uniqueMap = new Map();
-  for (const r of records) {
-    uniqueMap.set(r.id, r);
+  for (const r of allRecords) {
+    if (r && r.id) {
+      uniqueMap.set(r.id, r);
+    }
   }
   const result = Array.from(uniqueMap.values()).sort((a, b) => a.timestamp - b.timestamp);
 
