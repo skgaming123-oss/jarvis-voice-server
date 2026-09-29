@@ -100,24 +100,71 @@ function cleanSpeechText(rawText) {
 }
 
 /**
+ * Detects if a user query is asking for a photo, image, picture, or wallpaper
+ */
+function detectPhotoRequest(query) {
+  const q = (query || '').toLowerCase();
+  const photoKeywords = [
+    'photo', 'image', 'picture', 'pic', 'wallpaper', 'photo bhejo', 'photo dikhao',
+    'image dikhao', 'photo banao', 'tasveer', 'तस्वीर', 'फोटो', 'इमेज', 'picture do',
+    'drawing', 'sketch', 'wallpaper banao', 'photo send karo'
+  ];
+  return photoKeywords.some(k => q.includes(k));
+}
+
+/**
+ * Generates high-res image payload for synced Android App chat
+ */
+function createJarvisPhotoPayload(userQuery) {
+  let prompt = userQuery
+    .replace(/(?:mujhe|humko|hume|jarvis|sir|ek|ki|ka|ke|photo|image|picture|pic|wallpaper|tasveer|bhejo|dikhao|banao|send karo|do|chahiye|de do|show me|generate|create|a|an|the|फोटो|तस्वीर|इमेज)/gi, '')
+    .trim();
+
+  if (!prompt || prompt.length < 2) {
+    prompt = 'Futuristic Iron Man Arc Reactor with holographic cyber glow';
+  }
+
+  const encodedPrompt = encodeURIComponent(prompt + ', 8k resolution, photorealistic masterpiece, dramatic lighting');
+  const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?width=1024&height=1024&nologo=true`;
+
+  return {
+    imageUrl,
+    imagesJson: JSON.stringify([{
+      url: imageUrl,
+      title: prompt,
+      sourceName: "Jarvis AI Cloud Generation",
+      sourceUrl: imageUrl,
+      width: 1024,
+      height: 1024
+    }])
+  };
+}
+
+/**
  * Direct Gemini AI Completion with multi-turn context and conversational voice persona
  */
-async function queryGeminiChat(userQuery, deviceId = 'default') {
+async function queryGeminiChat(userQuery, deviceId = 'default', isPhotoRequest = false) {
   if (!GEMINI_API_KEY || GEMINI_API_KEY === 'YOUR_GEMINI_AI_STUDIO_API_KEY') {
     throw new Error('GEMINI_API_KEY is not configured');
   }
 
   const currentDateContext = getCurrentIstContext();
+  const photoContext = isPhotoRequest 
+    ? 'CRITICAL NOTE: The user is asking for a photo/image. You have ALREADY generated and dispatched that photo directly into their connected Jarvis Android App. You must inform the user politely in 1-2 spoken sentences that you have sent the photo to their Jarvis app (e.g. "सर, मैंने आपके जार्विस ऐप में फोटो भेज दी है। आप ऐप में देख सकते हैं।").'
+    : '';
+
   const sysInstruction = 
     `You are J.A.R.V.I.S. (Just A Rather Very Intelligent System), the ultimate personal AI assistant and loyal companion created by the user.
 CURRENT REAL-WORLD TIME & DATE (IST): ${currentDateContext}.
 
-VOICE CALL RULES & PERSONA:
-1. IDENTITY: You are J.A.R.V.I.S. (जार्विस). Speak with a polite, sophisticated, loyal, and authoritative male tone, addressing the user respectfully as "सर" (Sir) or "बॉस" (Boss).
-2. CONVERSATIONAL SPOKEN LENGTH: You are speaking in a real-time live voice call. Do NOT generate huge essays, long bullet lists, or repetitive walls of text. Keep your responses natural, crisp, intelligent, and conversational (typically 2 to 4 spoken sentences) unless the user specifically asks for an extensive in-depth breakdown.
-3. ABSOLUTELY NO MARKDOWN OR SYMBOLS: Do NOT use asterisks (*), hashtags (#), brackets, HTML tags (<>), bullets, slashes (/), backticks, or emojis. Output 100% clean spoken sentences that sound natural when read aloud by Text-to-Speech.
-4. LANGUAGE: Natural conversational Hindi (Devanagari script) or natural Hinglish. Keep pronunciation effortless for TTS engines.
-5. NO REPETITIVE INTRODUCTIONS: Never start by saying "Main Jarvis hoon" unless directly asked about your identity.`;
+VOICE CALL & APP INTEGRATION CONTEXT:
+1. IDENTITY: You are J.A.R.V.I.S. (जार्विस). Speak with a polite, sophisticated, loyal, and authoritative MALE tone, addressing the user respectfully as "सर" (Sir) or "बॉस" (Boss).
+2. APP AWARENESS: You are talking to the user via a live 24/7 Web Voice Call link. You are 100% aware that the user is accessing you through this web link, and whatever you say, do, calculate, automate, or generate is INSTANTLY synced and visible in real-time on their Jarvis Android Application.
+3. PHOTO COMMANDS: If the user asks for any photo, image, picture, or wallpaper, state clearly and politely that you have delivered that photo directly into their Jarvis Android App.
+${photoContext}
+4. CONVERSATIONAL SPOKEN LENGTH: Keep answers natural, crisp, intelligent, and conversational (typically 2 to 4 spoken sentences) without unnecessary walls of text.
+5. ABSOLUTELY NO MARKDOWN OR SYMBOLS: Do NOT use asterisks (*), hashtags (#), brackets, HTML tags (<>), bullets, slashes (/), backticks, or emojis. Output 100% clean spoken sentences.
+6. LANGUAGE: Natural conversational Hindi (Devanagari script) or natural Hinglish.`;
 
   // Get recent turns for this device
   let history = deviceConversations.get(deviceId) || [];
@@ -142,7 +189,7 @@ VOICE CALL RULES & PERSONA:
     systemInstruction: { parts: [{ text: sysInstruction }] },
     generationConfig: {
       temperature: 0.5,
-      maxOutputTokens: 600
+      maxOutputTokens: 500
     }
   });
 
@@ -326,7 +373,7 @@ app.get('/api/greeting', async (req, res) => {
 /**
  * 100% Free Web Call API endpoint
  * Generates natural answer + neural audio WAV
- * Syncs command directly into device's webCallHistory
+ * Syncs command & generated photos directly into device's webCallHistory
  */
 app.post('/api/chat-call', async (req, res) => {
   const query = req.body.query || '';
@@ -337,7 +384,10 @@ app.post('/api/chat-call', async (req, res) => {
   }
 
   try {
-    const answer = await queryGeminiChat(query, deviceId);
+    const isPhoto = detectPhotoRequest(query);
+    const photoData = isPhoto ? createJarvisPhotoPayload(query) : null;
+
+    const answer = await queryGeminiChat(query, deviceId, isPhoto);
     const audioBase64 = await generateTtsAudio(answer);
 
     // Save to device history so the specific originating Android app can sync
@@ -346,6 +396,8 @@ app.post('/api/chat-call', async (req, res) => {
       deviceId: deviceId,
       user: query.trim(),
       answer: answer,
+      imageUrl: photoData ? photoData.imageUrl : '',
+      imagesJson: photoData ? photoData.imagesJson : '[]',
       timestamp: Date.now()
     };
 
@@ -360,6 +412,8 @@ app.post('/api/chat-call', async (req, res) => {
       answer,
       audioBase64,
       deviceId,
+      imageUrl: record.imageUrl,
+      imagesJson: record.imagesJson,
       status: 'success'
     });
   } catch (err) {
